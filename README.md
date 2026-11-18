@@ -50,6 +50,20 @@ Příkaz `internet zap` sdílí do hotspotu aktuální připojení počítače k
 - Když se počítač přepojí na jinou síť, načti ji do hotspotu příkazy `stop` a `start`.
 - Pokud sdílení selže, hotspot běží dál jako místní síť bez internetu.
 
+## Nízká latence
+
+Za běhu hotspotu aplikace sama vypne úsporu energie Wi-Fi (i na baterii) a hledání Wi-Fi sítí na pozadí. Obojí totiž zdržuje pakety od klientů. Po zastavení hotspotu vrátí původní nastavení.
+
+Pro nejnižší zpoždění pomůže ještě:
+
+- Nepřipojovat počítač k jiné Wi-Fi a nechat `internet vyp`. Jinak karta přepíná mezi dvěma kanály.
+- Vypnout Bluetooth, pokud ho nepotřebuješ. Wi-Fi a Bluetooth často sdílejí jednu anténu.
+- Úspora energie ve Windows vypnutá, režim napájení Nejlepší výkon, ideálně na nabíječce.
+- V ovladači Wi-Fi vypnout úsporné režimy a roaming. U karet Realtek v PowerShellu spuštěném jako správce:
+  `Set-NetAdapterAdvancedProperty -Name "Wi-Fi" -RegistryKeyword "LpsEn" -DisplayValue "Low"` a
+  `Set-NetAdapterAdvancedProperty -Name "Wi-Fi" -RegistryKeyword "RegRoamLevel" -DisplayValue "1. Disable"`.
+- V telefonu vypnout úsporu baterie a zapnout herní režim.
+
 ## Když něco nejde
 
 - Zkontroluj, že je zapnutá Wi-Fi a vypnutý režim Letadlo.

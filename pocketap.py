@@ -26,6 +26,7 @@ import subprocess
 import sys
 import threading
 import time
+import uuid
 from ctypes import wintypes
 from pathlib import Path
 
@@ -80,6 +81,9 @@ DEFAULT_PASSWORD = "123456789"
 RETRY_SECONDS = 3
 FIREWALL_RULE = "PocketAP DHCP"
 LEASE_SECONDS = 12 * 3600
+WIFI_POWER_SUBGROUP = "19cbb8fa-5279-450e-9fac-8a3d5fedd0c1"
+WIFI_POWER_SETTING = "12bbebe6-58d6-4636-95bb-3217ef867c1a"  # Úspora energie Wi-Fi, 0 je maximální výkon.
+WLAN_BACKGROUND_SCAN, WLAN_STREAMING_MODE = 2, 3  # WLAN_INTF_OPCODE
 
 ADAPTERS_PS = r"""
 $ips = @(Get-NetIPAddress -AddressFamily IPv4 -ErrorAction SilentlyContinue)
@@ -243,6 +247,144 @@ def quietly(action) -> None:
         action()
     except OSError:
         pass
+
+
+class GUID(ctypes.Structure):
+    _fields_ = [
+        ("Data1", wintypes.DWORD), ("Data2", wintypes.WORD), ("Data3", wintypes.WORD), ("Data4", ctypes.c_ubyte * 8),
+    ]
+
+    @classmethod
+    def parse(cls, text: str) -> GUID:
+        return cls.from_buffer_copy(uuid.UUID(text).bytes_le)
+
+
+class WlanInterfaceInfo(ctypes.Structure):
+    _fields_ = [("guid", GUID), ("description", ctypes.c_wchar * 256), ("state", ctypes.c_int)]
+
+
+class WlanInterfaceList(ctypes.Structure):
+    _fields_ = [("count", wintypes.DWORD), ("index", wintypes.DWORD), ("items", WlanInterfaceInfo * 1)]
+
+
+class IfRow(ctypes.Structure):
+    """MIB_IF_ROW2, z něhož se čte jen stav rozhraní."""
+
+    _fields_ = [
+        ("InterfaceLuid", ctypes.c_uint64), ("InterfaceIndex", wintypes.ULONG), ("InterfaceGuid", GUID),
+        ("Alias", ctypes.c_wchar * 257), ("Description", ctypes.c_wchar * 257),
+        ("PhysicalAddressLength", wintypes.ULONG), ("PhysicalAddress", ctypes.c_ubyte * 32),
+        ("PermanentPhysicalAddress", ctypes.c_ubyte * 32), ("Mtu", wintypes.ULONG), ("Type", wintypes.ULONG),
+        ("TunnelType", ctypes.c_int), ("MediaType", ctypes.c_int), ("PhysicalMediumType", ctypes.c_int),
+        ("AccessType", ctypes.c_int), ("DirectionType", ctypes.c_int), ("Flags", ctypes.c_ubyte),
+        ("OperStatus", ctypes.c_int), ("AdminStatus", ctypes.c_int), ("MediaConnectState", ctypes.c_int),
+        ("NetworkGuid", GUID), ("ConnectionType", ctypes.c_int), ("Counters", ctypes.c_uint64 * 20),
+    ]
+
+
+def interface_up(if_index: int) -> bool:
+    """Stav rozhraní přímo od Windows, bez spouštění PowerShellu a bez dotazu na statistiky ovladače."""
+    row = IfRow(InterfaceIndex=if_index)
+    if ctypes.windll.iphlpapi.GetIfEntry2Ex(2, ctypes.byref(row)):  # MibIfEntryNormalWithoutStatistics
+        return False
+    return row.OperStatus == 1  # IfOperStatusUp
+
+
+def check_win32(code: int) -> None:
+    if code:
+        raise ctypes.WinError(code)
+
+
+class LowLatency:
+    """Za běhu hotspotu vypne na Wi-Fi to, co zdržuje pakety. Metoda stop() vrátí vše jako dřív."""
+
+    def __init__(self) -> None:
+        self.wlan: wintypes.HANDLE | None = None
+        self.interfaces: list[GUID] = []
+        self.power: tuple[GUID, int, int] | None = None
+
+    def start(self) -> None:
+        done, failed = [], []
+        for name, action in (("Wi-Fi bez úspory energie", self._max_power), ("bez hledání sítí", self._quiet_wlan)):
+            try:
+                action()
+                done.append(name)
+            except OSError as exc:
+                failed.append(f"{name} ({exc.strerror or exc})")
+        if done:
+            log(f"Nízká latence: {', '.join(done)}.")
+        if failed:
+            log(f"Nepodařilo se nastavit: {', '.join(failed)}.")
+
+    def stop(self) -> None:
+        if self.wlan is not None:
+            wlanapi = ctypes.windll.wlanapi
+            on, off = wintypes.BOOL(True), wintypes.BOOL(False)
+            for guid in self.interfaces:
+                wlanapi.WlanSetInterface(self.wlan, ctypes.byref(guid), WLAN_STREAMING_MODE, 4, ctypes.byref(off), None)
+                wlanapi.WlanSetInterface(self.wlan, ctypes.byref(guid), WLAN_BACKGROUND_SCAN, 4, ctypes.byref(on), None)
+            wlanapi.WlanCloseHandle(self.wlan, None)  # Zavřením handle by Windows nastavení vrátil i sám.
+            self.wlan, self.interfaces = None, []
+        if self.power is not None:
+            scheme, ac, dc = self.power
+            self.power = None
+            try:
+                self._write_power(scheme, ac, dc)
+            except OSError as exc:
+                log(f"Úsporu energie Wi-Fi se nepodařilo vrátit: {exc.strerror or exc}")
+
+    def _max_power(self) -> None:
+        """Úspora energie nechává kartu mezi pakety usínat a pakety od klientů pak čekají."""
+        powrprof = ctypes.windll.powrprof
+        scheme = self._active_scheme()
+        subgroup, setting = GUID.parse(WIFI_POWER_SUBGROUP), GUID.parse(WIFI_POWER_SETTING)
+        where = (None, ctypes.byref(scheme), ctypes.byref(subgroup), ctypes.byref(setting))
+        ac, dc = wintypes.DWORD(), wintypes.DWORD()
+        check_win32(powrprof.PowerReadACValueIndex(*where, ctypes.byref(ac)))
+        check_win32(powrprof.PowerReadDCValueIndex(*where, ctypes.byref(dc)))
+        self.power = (scheme, ac.value, dc.value)
+        self._write_power(scheme, 0, 0)
+
+    def _write_power(self, scheme: GUID, ac: int, dc: int) -> None:
+        powrprof = ctypes.windll.powrprof
+        subgroup, setting = GUID.parse(WIFI_POWER_SUBGROUP), GUID.parse(WIFI_POWER_SETTING)
+        where = (None, ctypes.byref(scheme), ctypes.byref(subgroup), ctypes.byref(setting))
+        check_win32(powrprof.PowerWriteACValueIndex(*where, ac))
+        check_win32(powrprof.PowerWriteDCValueIndex(*where, dc))
+        check_win32(powrprof.PowerSetActiveScheme(None, ctypes.byref(self._active_scheme())))  # Projeví změnu.
+
+    @staticmethod
+    def _active_scheme() -> GUID:
+        pointer = ctypes.POINTER(GUID)()
+        check_win32(ctypes.windll.powrprof.PowerGetActiveScheme(None, ctypes.byref(pointer)))
+        try:
+            return GUID.from_buffer_copy(bytes(pointer.contents))
+        finally:
+            ctypes.windll.kernel32.LocalFree(pointer)
+
+    def _quiet_wlan(self) -> None:
+        """Hledání sítí odvádí kartu z kanálu hotspotu a klienti mezitím nemohou vysílat."""
+        wlanapi = ctypes.windll.wlanapi
+        handle, version = wintypes.HANDLE(), wintypes.DWORD()
+        check_win32(wlanapi.WlanOpenHandle(2, None, ctypes.byref(version), ctypes.byref(handle)))
+        self.wlan = handle
+        listing = ctypes.POINTER(WlanInterfaceList)()
+        check_win32(wlanapi.WlanEnumInterfaces(handle, None, ctypes.byref(listing)))
+        try:
+            items = ctypes.cast(listing.contents.items, ctypes.POINTER(WlanInterfaceInfo))
+            guids = [GUID.from_buffer_copy(bytes(items[i].guid)) for i in range(listing.contents.count)]
+        finally:
+            wlanapi.WlanFreeMemory(listing)
+        on, off = wintypes.BOOL(True), wintypes.BOOL(False)
+        code = 2  # ERROR_FILE_NOT_FOUND, když žádná Wi-Fi karta není.
+        for guid in guids:
+            code = wlanapi.WlanSetInterface(handle, ctypes.byref(guid), WLAN_BACKGROUND_SCAN, 4, ctypes.byref(off), None)
+            if code == 0:
+                self.interfaces.append(guid)
+                # Streamovací režim jde zapnout jen při připojení k jiné Wi-Fi, jinde chyba nevadí.
+                wlanapi.WlanSetInterface(handle, ctypes.byref(guid), WLAN_STREAMING_MODE, 4, ctypes.byref(on), None)
+        if not self.interfaces:
+            raise ctypes.WinError(code)
 
 
 class AccessPoint:
@@ -577,10 +719,7 @@ def watch(ap: AccessPoint, if_index: int, stop: threading.Event) -> None:
         seconds += 1
         if seconds % 5:
             continue
-        try:
-            missing = 0 if if_index in adapters() else missing + 1
-        except HotspotError:
-            continue
+        missing = 0 if interface_up(if_index) else missing + 1
         if missing >= 2:
             raise HotspotError("Virtuální adaptér hotspotu se vypnul.")
 
@@ -687,6 +826,7 @@ class Hotspot:
             raise NeedsAdmin
         before = {index: adapter["Mac"] for index, adapter in adapters().items()}
         ap = self.ap = AccessPoint()
+        tuning = LowLatency()
         server = None
         if_index = None
         try:
@@ -704,8 +844,10 @@ class Hotspot:
             self.state = "běží"
             shared = f", internet z připojení {self.upstream}" if self.upstream else ""
             log(f"Hotspot běží: síť {ssid}, heslo {password}, IP {host}{shared}")
+            tuning.start()
             watch(ap, if_index, self.changed)
         finally:
+            tuning.stop()
             upstream, self.upstream = self.upstream, None
             self.host = self.ap = None
             if server is not None:
