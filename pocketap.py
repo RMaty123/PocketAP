@@ -17,7 +17,6 @@ import importlib
 import ipaddress
 import json
 import os
-import select
 import shutil
 import site
 import socket
@@ -27,6 +26,7 @@ import sys
 import threading
 import time
 import uuid
+import winreg
 from ctypes import wintypes
 from pathlib import Path
 
@@ -79,23 +79,18 @@ except ImportError:
 DEFAULT_SSID = "PocketAP"
 DEFAULT_PASSWORD = "123456789"
 RETRY_SECONDS = 3
+POLL_SECONDS = 0.25
 FIREWALL_RULE = "PocketAP DHCP"
 LEASE_SECONDS = 12 * 3600
 WIFI_POWER_SUBGROUP = "19cbb8fa-5279-450e-9fac-8a3d5fedd0c1"
 WIFI_POWER_SETTING = "12bbebe6-58d6-4636-95bb-3217ef867c1a"  # Wi-Fi power saving, 0 is maximum performance.
 WLAN_BACKGROUND_SCAN, WLAN_STREAMING_MODE = 2, 3  # WLAN_INTF_OPCODE
-
-ADAPTERS_PS = r"""
-$ips = @(Get-NetIPAddress -AddressFamily IPv4 -ErrorAction SilentlyContinue)
-$dhcp = @(Get-NetUDPEndpoint -LocalPort 67 -ErrorAction SilentlyContinue | ForEach-Object { $_.LocalAddress })
-Get-NetAdapter -IncludeHidden | Where-Object {
-  $_.Status -eq 'Up' -and ($_.InterfaceDescription -like '*Wi-Fi Direct*' -or $_.ComponentID -like '*vwifimp_wfd*')
-} | ForEach-Object {
-  $index = [int]$_.ifIndex
-  $own = @($ips | Where-Object { $_.InterfaceIndex -eq $index } | ForEach-Object { $_.IPAddress })
-  [pscustomobject]@{ Index = $index; Mac = $_.MacAddress; Dhcp = @($own | Where-Object { $dhcp -contains $_ }) }
-}
-"""
+NETWORK_CLASS_KEY = r"SYSTEM\CurrentControlSet\Control\Class\{4d36e972-e325-11ce-bfc1-08002be10318}"
+WIFI_DIRECT_DRIVER = "vwifimp_wfd"
+IF_OPER_UP = 1
+IF_FILTER_INTERFACE = 2  # Marks filter driver rows that only mirror a real adapter.
+IPV4_ROW = struct.Struct("<4x4s32xI16xB19x")  # MIB_UNICASTIPADDRESS_ROW: address, interface index, prefix length.
+UDP_ROW = struct.Struct("!4sH2x")  # MIB_UDPROW: address, port.
 
 SHARING_PS = r"""
 $ErrorActionPreference = 'Stop'
@@ -221,12 +216,7 @@ def powershell_json(script: str, timeout: float = 30) -> list:
         ).stdout
         return json.loads(output) if output.strip() else []
     except (OSError, ValueError, subprocess.SubprocessError) as exc:
-        raise HotspotError(f"Could not read the network adapter status: {exc}") from exc
-
-
-def adapters() -> dict[int, dict]:
-    """Active Wi-Fi Direct virtual adapters by interface index."""
-    return {item["Index"]: item for item in powershell_json(ADAPTERS_PS)}
+        raise HotspotError(f"PowerShell failed: {exc}") from exc
 
 
 def is_admin() -> bool:
@@ -245,7 +235,7 @@ def quietly(action) -> None:
     """Cleanup must continue even when one step fails."""
     try:
         action()
-    except OSError:
+    except (OSError, subprocess.SubprocessError):
         pass
 
 
@@ -268,7 +258,7 @@ class WlanInterfaceList(ctypes.Structure):
 
 
 class IfRow(ctypes.Structure):
-    """MIB_IF_ROW2, only the interface status is read from it."""
+    """MIB_IF_ROW2, the Windows description of one network interface."""
 
     _fields_ = [
         ("InterfaceLuid", ctypes.c_uint64), ("InterfaceIndex", wintypes.ULONG), ("InterfaceGuid", GUID),
@@ -282,17 +272,80 @@ class IfRow(ctypes.Structure):
     ]
 
 
-def interface_up(if_index: int) -> bool:
-    """Interface status straight from Windows, without PowerShell or querying driver statistics."""
-    row = IfRow(InterfaceIndex=if_index)
-    if ctypes.windll.iphlpapi.GetIfEntry2Ex(2, ctypes.byref(row)):  # MibIfEntryNormalWithoutStatistics
-        return False
-    return row.OperStatus == 1  # IfOperStatusUp
+iphlpapi = ctypes.windll.iphlpapi
 
 
 def check_win32(code: int) -> None:
     if code:
         raise ctypes.WinError(code)
+
+
+def interface_up(if_index: int) -> bool:
+    """Interface status straight from Windows, without querying driver statistics."""
+    row = IfRow(InterfaceIndex=if_index)
+    if iphlpapi.GetIfEntry2Ex(2, ctypes.byref(row)):  # MibIfEntryNormalWithoutStatistics
+        return False
+    return row.OperStatus == IF_OPER_UP
+
+
+def mib_rows(function, argument: int, row_size: int) -> list[bytes]:
+    """Rows of a table allocated by the Windows IP Helper API."""
+    table = ctypes.c_void_p()
+    check_win32(function(argument, ctypes.byref(table)))
+    try:
+        count = wintypes.ULONG.from_address(table.value).value
+        data = ctypes.string_at(table.value + 8, count * row_size)  # Alignment puts the first row at offset 8.
+    finally:
+        iphlpapi.FreeMibTable(table)
+    return [data[start : start + row_size] for start in range(0, len(data), row_size)]
+
+
+def wifi_direct_guids() -> set[str]:
+    """Interface GUIDs of the Wi-Fi Direct driver, found whatever language Windows uses."""
+    guids = set()
+    with winreg.OpenKey(winreg.HKEY_LOCAL_MACHINE, NETWORK_CLASS_KEY) as root:
+        for position in range(winreg.QueryInfoKey(root)[0]):
+            try:
+                with winreg.OpenKey(root, winreg.EnumKey(root, position)) as key:
+                    if WIFI_DIRECT_DRIVER in winreg.QueryValueEx(key, "ComponentId")[0].lower():
+                        guids.add(winreg.QueryValueEx(key, "NetCfgInstanceId")[0].strip("{}").lower())
+            except OSError:
+                continue  # Not every subkey describes an adapter.
+    return guids
+
+
+def adapters() -> dict[int, bytes]:
+    """Active Wi-Fi Direct virtual adapters as interface index and MAC address."""
+    guids = wifi_direct_guids()
+    active = {}
+    for data in mib_rows(iphlpapi.GetIfTable2Ex, 2, ctypes.sizeof(IfRow)):  # MibIfTableNormalWithoutStatistics
+        row = IfRow.from_buffer_copy(data)
+        if row.OperStatus != IF_OPER_UP or row.Flags & IF_FILTER_INTERFACE:
+            continue
+        guid = str(uuid.UUID(bytes_le=bytes(row.InterfaceGuid)))
+        if "wi-fi direct" in row.Description.lower() or guid in guids:
+            active[row.InterfaceIndex] = bytes(row.PhysicalAddress[:row.PhysicalAddressLength])
+    return active
+
+
+def ipv4_addresses() -> list[tuple[str, int, int]]:
+    """Every IPv4 address of this computer as address, interface index and prefix length."""
+    rows = mib_rows(iphlpapi.GetUnicastIpAddressTable, socket.AF_INET, IPV4_ROW.size)
+    return [(socket.inet_ntoa(address), index, prefix) for address, index, prefix in map(IPV4_ROW.unpack, rows)]
+
+
+def udp_addresses(port: int) -> set[str]:
+    """Local IPv4 addresses that have a UDP socket open on this port."""
+    size = wintypes.DWORD(4096)
+    while True:
+        buffer = ctypes.create_string_buffer(size.value)
+        code = iphlpapi.GetUdpTable(buffer, ctypes.byref(size), False)
+        if code != 122:  # ERROR_INSUFFICIENT_BUFFER, size now holds what the table needs.
+            break
+    check_win32(code)
+    count = int.from_bytes(buffer.raw[:4], sys.byteorder)
+    rows = UDP_ROW.iter_unpack(buffer.raw[4 : 4 + count * UDP_ROW.size])
+    return {socket.inet_ntoa(address) for address, local_port in rows if local_port == port}
 
 
 class LowLatency:
@@ -337,8 +390,7 @@ class LowLatency:
         """Power saving lets the card sleep between packets, so packets from clients have to wait."""
         powrprof = ctypes.windll.powrprof
         scheme = self._active_scheme()
-        subgroup, setting = GUID.parse(WIFI_POWER_SUBGROUP), GUID.parse(WIFI_POWER_SETTING)
-        where = (None, ctypes.byref(scheme), ctypes.byref(subgroup), ctypes.byref(setting))
+        where = self._power_setting(scheme)
         ac, dc = wintypes.DWORD(), wintypes.DWORD()
         check_win32(powrprof.PowerReadACValueIndex(*where, ctypes.byref(ac)))
         check_win32(powrprof.PowerReadDCValueIndex(*where, ctypes.byref(dc)))
@@ -347,11 +399,16 @@ class LowLatency:
 
     def _write_power(self, scheme: GUID, ac: int, dc: int) -> None:
         powrprof = ctypes.windll.powrprof
-        subgroup, setting = GUID.parse(WIFI_POWER_SUBGROUP), GUID.parse(WIFI_POWER_SETTING)
-        where = (None, ctypes.byref(scheme), ctypes.byref(subgroup), ctypes.byref(setting))
+        where = self._power_setting(scheme)
         check_win32(powrprof.PowerWriteACValueIndex(*where, ac))
         check_win32(powrprof.PowerWriteDCValueIndex(*where, dc))
         check_win32(powrprof.PowerSetActiveScheme(None, ctypes.byref(self._active_scheme())))  # Applies the change.
+
+    @staticmethod
+    def _power_setting(scheme: GUID) -> tuple:
+        """Arguments that select the Wi-Fi power saving setting of a power scheme."""
+        subgroup, setting = GUID.parse(WIFI_POWER_SUBGROUP), GUID.parse(WIFI_POWER_SETTING)
+        return None, ctypes.byref(scheme), ctypes.byref(subgroup), ctypes.byref(setting)
 
     @staticmethod
     def _active_scheme() -> GUID:
@@ -459,11 +516,14 @@ class AccessPoint:
             pairs = device.get_connection_endpoint_pairs()
             address = pairs[0].remote_host_name.display_name if len(pairs) else "IP not known yet"
             token = device.add_connection_status_changed(self._on_device_status)
+            entry = (device, token, name)
             with self.lock:
-                if self.stopping:
-                    device.close()
-                    return
-                self.devices[device_id] = (device, token, name)
+                accepted = not self.stopping
+                if accepted:
+                    self.devices[device_id] = entry
+            if not accepted:
+                self._close_device(entry)  # Outside the lock, status callbacks need it to finish.
+                return
             log(f"+ Connected: {name} ({address})")
         except OSError as exc:
             log(f"Could not accept client {name}: {exc}")
@@ -608,29 +668,28 @@ class DhcpServer:
     def _serve(self) -> None:
         while not self.stopped.is_set():
             try:
-                if select.select([self.sock], [], [], 0.5)[0]:
-                    answer = self.reply(self.sock.recvfrom(4096)[0])
-                    if answer:
-                        self.sock.sendto(answer[0], (answer[1], 68))
-            except (OSError, IndexError, ValueError):
-                continue  # Neither a bad packet nor a socket error stops the server.
+                answer = self.reply(self.sock.recvfrom(4096)[0])
+                if answer:
+                    self.sock.sendto(answer[0], (answer[1], 68))
+            except (IndexError, ValueError):
+                continue  # A malformed packet does not stop the server.
+            except OSError:
+                self.stopped.wait(0.2)  # A lasting socket error must not spin the CPU.
 
     def stop(self) -> None:
         self.stopped.set()
+        if self.sock is not None:
+            self.sock.close()  # Wakes the thread from its blocking receive.
         if self.thread is not None:
             self.thread.join(timeout=3)
-        if self.sock is not None:
-            self.sock.close()
 
 
 def free_host_address(if_index: int) -> str:
     """Find a subnet that no other interface on this computer uses."""
-    script = (
-        "Get-NetIPAddress -AddressFamily IPv4 -ErrorAction SilentlyContinue | "
-        f"Where-Object {{ $_.InterfaceIndex -ne {if_index} }} | "
-        "ForEach-Object { \"$($_.IPAddress)/$($_.PrefixLength)\" }"
-    )
-    used = [ipaddress.ip_network(item, strict=False) for item in powershell_json(script)]
+    used = [
+        ipaddress.ip_network((address, prefix), strict=False)
+        for address, index, prefix in ipv4_addresses() if index != if_index
+    ]
     for number in range(50, 100):
         candidate = ipaddress.ip_network(f"192.168.{number}.0/24")
         if not any(candidate.overlaps(network) for network in used):
@@ -655,14 +714,18 @@ def start_own_dhcp(if_index: int) -> DhcpServer:
         "protocol=UDP", "localport=67", "remoteport=68", "profile=any", "interfacetype=wireless", f"program={python}",
     )
     server = DhcpServer(host, if_index)
-    server.start()
+    try:
+        server.start()
+    except HotspotError:
+        stop_own_dhcp(server)  # Do not leave the firewall rule and static address behind.
+        raise
     return server
 
 
 def stop_own_dhcp(server: DhcpServer) -> None:
     server.stop()
-    run("netsh", "advfirewall", "firewall", "delete", "rule", f"name={FIREWALL_RULE}")
-    run("netsh", "interface", "ipv4", "set", "address", f"name={server.if_index}", "source=dhcp")
+    quietly(lambda: run("netsh", "advfirewall", "firewall", "delete", "rule", f"name={FIREWALL_RULE}"))
+    quietly(lambda: run("netsh", "interface", "ipv4", "set", "address", f"name={server.if_index}", "source=dhcp"))
 
 
 def start_sharing(if_index: int) -> tuple[str, str]:
@@ -685,15 +748,15 @@ def stop_sharing() -> None:
         log(f"Could not turn off internet sharing: {result[0].get('Error')}")
 
 
-def wait_for_adapter(before: dict[int, str], ap: AccessPoint) -> int:
+def wait_for_adapter(before: dict[int, bytes], ap: AccessPoint) -> int:
     """Find the virtual adapter created by starting the hotspot."""
     deadline = time.monotonic() + 20
     while time.monotonic() < deadline:
         ap.check()
-        for index, adapter in adapters().items():
-            if before.get(index) != adapter["Mac"]:
+        for index, mac in adapters().items():
+            if before.get(index) != mac:
                 return index
-        time.sleep(0.5)
+        time.sleep(POLL_SECONDS)
     raise HotspotError("Windows did not create the hotspot virtual adapter.")
 
 
@@ -702,12 +765,13 @@ def wait_for_windows_dhcp(if_index: int, ap: AccessPoint, stop: threading.Event)
     deadline = time.monotonic() + 10
     while time.monotonic() < deadline and not stop.is_set():
         ap.check()
-        adapter = adapters().get(if_index)
-        if adapter is None:
+        if not interface_up(if_index):
             raise HotspotError("The hotspot virtual adapter disappeared.")
-        if adapter["Dhcp"]:
-            return adapter["Dhcp"][0]
-        time.sleep(1)
+        listening = udp_addresses(67)
+        for address, index, _prefix in ipv4_addresses():
+            if index == if_index and address in listening:
+                return address
+        stop.wait(POLL_SECONDS)
     return None
 
 
@@ -824,7 +888,7 @@ class Hotspot:
         ssid, password, internet = self.ssid, self.password, self.internet
         if internet and not is_admin():
             raise NeedsAdmin
-        before = {index: adapter["Mac"] for index, adapter in adapters().items()}
+        before = adapters()
         ap = self.ap = AccessPoint()
         tuning = LowLatency()
         server = None
@@ -862,13 +926,8 @@ class Hotspot:
     def _wait_until_down(if_index: int) -> None:
         """The next start only recognizes a new adapter once the old one is no longer active."""
         deadline = time.monotonic() + 12
-        while time.monotonic() < deadline:
-            try:
-                if if_index not in adapters():
-                    return
-            except HotspotError:
-                return
-            time.sleep(0.5)
+        while interface_up(if_index) and time.monotonic() < deadline:
+            time.sleep(POLL_SECONDS)
 
 
 def ssid_problem(ssid: str) -> str | None:
@@ -949,8 +1008,8 @@ def command_loop(hotspot: Hotspot) -> None:
         try:
             line = read_command()
         except EOFError:  # Without console input the hotspot keeps running until Ctrl+C.
-            while True:
-                time.sleep(1)
+            hotspot.thread.join()
+            return
         if not execute(hotspot, line):
             return
 
