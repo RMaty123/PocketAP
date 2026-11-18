@@ -1,18 +1,21 @@
 """PocketAP - Wi-Fi hotspot pro Windows, který běží i bez připojení k internetu.
 
-Použití:  run.bat [SSID] [-p HESLO]
+Použití:  python pocketap.py [SSID] [-p HESLO]
 
 Hotspot běží přes Wi-Fi Direct Legacy AP. Adresy klientům přiděluje Windows (ICS),
 a když to neudělá, spustí se vlastní DHCP server (ten vyžaduje práva správce).
+Chybějící balíčky WinRT si aplikace při prvním spuštění sama nainstaluje.
 """
 from __future__ import annotations
 
 import argparse
 import asyncio
 import ctypes
+import importlib
 import ipaddress
 import json
 import select
+import site
 import socket
 import struct
 import subprocess
@@ -22,15 +25,51 @@ import time
 from ctypes import wintypes
 from pathlib import Path
 
+WINRT_VERSION = "4!10.0.28000.2957"
+WINRT_PACKAGES = [
+    "winrt-runtime==4.2.0",
+    *(
+        f"winrt-Windows.{name}=={WINRT_VERSION}"
+        for name in (
+            "Devices.WiFiDirect", "Devices.Enumeration", "Foundation", "Foundation.Collections",
+            "Networking", "Security.Credentials", "Storage.Streams",
+        )
+    ),
+]
+
+
+def exit_with_error(message: str) -> None:
+    """Vypíše chybu a nechá okno otevřené, aby šla přečíst i po spuštění dvojklikem."""
+    print(message, flush=True)
+    try:
+        input("Stiskni Enter pro zavření okna...")
+    except (EOFError, OSError, RuntimeError):
+        pass
+    sys.exit(1)
+
+
+def load_winrt():
+    for name in (
+        "devices.enumeration", "foundation", "foundation.collections", "networking", "security.credentials",
+    ):
+        importlib.import_module(f"winrt.windows.{name}")
+    return importlib.import_module("winrt.windows.devices.wifidirect")
+
+
+def install_winrt() -> None:
+    print("Instaluji potřebné balíčky, poprvé je potřeba internet...", flush=True)
+    command = [sys.executable, "-m", "pip", "install", "--disable-pip-version-check", *WINRT_PACKAGES]
+    if subprocess.run(command, check=False).returncode != 0:
+        exit_with_error("Balíčky se nepodařilo nainstalovat. Je potřeba internet a Python 3.11 nebo novější.")
+    site.addsitedir(site.getusersitepackages())  # Složka mohla vzniknout až při této instalaci.
+    importlib.invalidate_caches()
+
+
 try:
-    import winrt.windows.devices.enumeration  # noqa: F401
-    import winrt.windows.devices.wifidirect as wd
-    import winrt.windows.foundation  # noqa: F401
-    import winrt.windows.foundation.collections  # noqa: F401
-    import winrt.windows.networking  # noqa: F401
-    import winrt.windows.security.credentials  # noqa: F401
+    wd = load_winrt()
 except ImportError:
-    sys.exit("Chybí balíčky WinRT. Spusť run.bat, který je nainstaluje.")
+    install_winrt()
+    wd = load_winrt()
 
 DEFAULT_SSID = "PocketAP"
 DEFAULT_PASSWORD = "123456789"
@@ -503,8 +542,7 @@ def main() -> int:
                 log("Windows neposkytuje DHCP, vlastní server potřebuje práva správce.")
                 if relaunch_as_admin():
                     return 0
-                log("Bez práv správce nedostanou klienti IP adresu. Spusť aplikaci jako správce.")
-                return 1
+                exit_with_error("Bez práv správce nedostanou klienti IP adresu. Spusť aplikaci jako správce.")
             except Exception as exc:  # noqa: BLE001 - hotspot se má vždy pokusit znovu naběhnout
                 log(f"{exc} Zkouším to znovu...")
             stop.wait(RETRY_SECONDS)
