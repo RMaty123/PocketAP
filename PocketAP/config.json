@@ -1,0 +1,25 @@
+{
+  "ssid": "PocketAP",
+  "passphrase": "PocketAP12345",
+  "network": {
+    "host_ip": "192.168.50.1",
+    "netmask": "255.255.255.0",
+    "dhcp_range_start": "192.168.50.100",
+    "dhcp_range_end": "192.168.50.200",
+    "lease_time_hours": 12
+  },
+  "dhcp": {
+    "advertise_host_as_gateway": false,
+    "conflict_probe_timeout_ms": 800
+  },
+  "timeouts": {
+    "ap_start_seconds": 25,
+    "interface_wait_seconds": 20,
+    "dhcp_detect_seconds": 10,
+    "ap_stop_seconds": 12
+  },
+  "test_server": {
+    "http_port": 8080,
+    "echo_port": 9000
+  }
+}
