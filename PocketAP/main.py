@@ -9,6 +9,7 @@ import threading
 from ctypes import wintypes
 from typing import Callable, Sequence
 
+from bootstrap import ensure_runtime
 from logger import get_logger, setup_logging
 from settings import ConfigError, load_config
 from system_utils import acquire_single_instance, is_admin, relaunch_elevated
@@ -76,7 +77,13 @@ def run_gui(config: object) -> int:
 
 
 def main(argv: Sequence[str] | None = None) -> int:
-    args = parse_arguments(argv)
+    arguments = list(sys.argv[1:] if argv is None else argv)
+    args = parse_arguments(arguments)
+    # Musí proběhnout první: bez balíčků WinRT se aplikace spustí znovu ve složce .venv.
+    exit_code = ensure_runtime(arguments)
+    if exit_code is not None:
+        return exit_code
+
     setup_logging(args.verbose)
     try:
         config = load_config()

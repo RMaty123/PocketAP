@@ -1,0 +1,22 @@
+2026-11-18 08:25:19,761 INFO    pocketap.controller: Spouštím Wi-Fi Direct Legacy AP...
+2026-11-18 08:25:20,834 ERROR   pocketap.controller: Start hotspotu selhal: Chybí Python balíčky WinRT. Spusťte run.bat nebo 'pip install -r requirements.txt'. Detail: No module named 'winrt'
+2026-11-18 08:29:19,853 INFO    pocketap.controller: Spouštím Wi-Fi Direct Legacy AP...
+2026-11-18 08:29:21,576 DEBUG   pocketap.wifidirect: Stav publisheru: STARTED
+2026-11-18 08:29:21,581 INFO    pocketap.wifidirect: Wi-Fi Direct Legacy AP běží, SSID 'PocketAP-Diag'.
+2026-11-18 08:29:22,866 INFO    pocketap.controller: Virtuální rozhraní: Připojení k místní síti* 10 (ifIndex 5, Microsoft Wi-Fi Direct Virtual Adapter #2)
+2026-11-18 08:29:25,178 INFO    pocketap.controller: Rozhraní má adresu 192.168.137.1/24 a DHCP zajišťuje Windows ICS (služba SharedAccess).
+2026-11-18 08:29:25,178 INFO    pocketap.controller: Vlastní DHCP se nespouští, aby v síti nebyly dva DHCP servery.
+2026-11-18 08:29:25,179 INFO    pocketap.controller: Hotspot běží. SSID 'PocketAP-Diag', adresa hostitele 192.168.137.1/24.
+2026-11-18 08:29:27,179 INFO    pocketap.controller: Zastavuji hotspot...
+2026-11-18 08:29:27,661 DEBUG   pocketap.wifidirect: Stav publisheru: STOPPED
+2026-11-18 08:29:28,913 INFO    pocketap.controller: Hotspot je zastaven.
+2026-11-18 08:30:27,444 INFO    pocketap.controller: Spouštím Wi-Fi Direct Legacy AP...
+2026-11-18 08:30:28,919 DEBUG   pocketap.wifidirect: Stav publisheru: STARTED
+2026-11-18 08:30:28,920 INFO    pocketap.wifidirect: Wi-Fi Direct Legacy AP běží, SSID 'PocketAP'.
+2026-11-18 08:30:30,009 INFO    pocketap.controller: Virtuální rozhraní: Připojení k místní síti* 10 (ifIndex 5, Microsoft Wi-Fi Direct Virtual Adapter #2)
+2026-11-18 08:30:31,971 INFO    pocketap.controller: Rozhraní má adresu 192.168.137.1/24 a DHCP zajišťuje Windows ICS (služba SharedAccess).
+2026-11-18 08:30:31,971 INFO    pocketap.controller: Vlastní DHCP se nespouští, aby v síti nebyly dva DHCP servery.
+2026-11-18 08:30:31,972 INFO    pocketap.controller: Hotspot běží. SSID 'PocketAP', adresa hostitele 192.168.137.1/24.
+2026-11-18 08:30:51,201 INFO    pocketap.controller: Zastavuji hotspot...
+2026-11-18 08:30:52,259 DEBUG   pocketap.wifidirect: Stav publisheru: STOPPED
+2026-11-18 08:30:53,344 INFO    pocketap.controller: Hotspot je zastaven.

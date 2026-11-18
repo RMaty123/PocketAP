@@ -79,7 +79,7 @@ def count_wifi_direct_device_interfaces() -> int:
 
     async def query() -> int:
         selector = wd.WiFiDirectDevice.get_device_selector(wd.WiFiDirectDeviceSelectorType.DEVICE_INTERFACE)
-        devices = await bindings.enumeration.DeviceInformation.find_all_async(selector)
+        devices = await bindings.enumeration.DeviceInformation.find_all_async_aqs_filter(selector)
         return len(devices)
 
     try:

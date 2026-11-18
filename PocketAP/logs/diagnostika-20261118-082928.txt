@@ -1,0 +1,16 @@
+[OK      ] Windows: Windows-11-10.0.26300-SP0 (build 26300)
+[OK      ] Python: 3.15.1 (64bit), vyžadováno 3.11+ 64bit
+[INFO    ] Oprávnění: běžný uživatel (vlastní DHCP a firewall vyžadují správce)
+[OK      ] Služba WLAN AutoConfig: Running
+[INFO    ] Služba ICS (SharedAccess): Running
+[VAROVÁNÍ] Mobile Hotspot (icssvc): běží, Mobile Hotspot má před Wi-Fi Direct přednost
+[OK      ] Fyzický Wi-Fi adaptér: Realtek RTL8852BE-VD WiFi 6 802.11ax PCIe Adapter [Up]
+[OK      ] Virtuální adaptér Wi-Fi Direct: Microsoft Wi-Fi Direct Virtual Adapter [Disconnected]; Microsoft Wi-Fi Direct Virtual Adapter #2 [Disconnected]
+[OK      ] WinRT Windows.Devices.WiFiDirect: API je dostupné
+[VAROVÁNÍ] Rozhraní Wi-Fi Direct: počet nalezených: 0
+[OK      ] Živý start AP: Windows potvrdil stav Started
+[OK      ] Virtuální rozhraní: Připojení k místní síti* 10
+[OK      ] Adresa hostitele: 192.168.137.1/24
+[OK      ] Poskytovatel DHCP: Windows ICS (služba SharedAccess)
+[OK      ] Zastavení AP: AP i síťová konfigurace byly uklizeny
+Výsledek: Wi-Fi Direct Legacy AP je podporován.
