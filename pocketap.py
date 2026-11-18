@@ -1,6 +1,7 @@
 """PocketAP - Wi-Fi hotspot pro Windows, který běží i bez připojení k internetu.
 
 Použití:  python pocketap.py [SSID] [-p HESLO]
+Za běhu se ovládá příkazy v konzoli, seznam vypíše příkaz help.
 
 Hotspot běží přes Wi-Fi Direct Legacy AP. Adresy klientům přiděluje Windows (ICS),
 a když to neudělá, spustí se vlastní DHCP server (ten vyžaduje práva správce).
@@ -14,7 +15,9 @@ import ctypes
 import importlib
 import ipaddress
 import json
+import os
 import select
+import shutil
 import site
 import socket
 import struct
@@ -98,15 +101,41 @@ class NeedsAdmin(Exception):
     """Windows neposkytuje DHCP a vlastní server vyžaduje práva správce."""
 
 
+PROMPT = "pocketap> "
+HELP = """Příkazy:
+  status          zobrazí stav hotspotu
+  ssid NÁZEV      změní název sítě
+  heslo HESLO     změní heslo (8 až 63 znaků bez diakritiky)
+  stop            pozastaví hotspot
+  start           znovu spustí hotspot
+  help            zobrazí tuto nápovědu
+  exit            vypne hotspot a ukončí aplikaci
+
+Změny platí jen do ukončení aplikace."""
+
+_output_lock = threading.Lock()
 _last_message = None
+_at_prompt = False
+
+
+def say(text: str = "") -> None:
+    """Vypíše odpověď na příkaz."""
+    with _output_lock:
+        print(text, flush=True)
 
 
 def log(text: str) -> None:
-    """Vypíše zprávu s časem. Stejnou zprávu po sobě neopakuje."""
+    """Vypíše událost s časem nad řádek s výzvou. Stejnou zprávu po sobě neopakuje."""
     global _last_message
-    if text != _last_message:
-        print(f"[{time.strftime('%H:%M:%S')}] {text}", flush=True)
+    with _output_lock:
+        if text == _last_message:
+            return
         _last_message = text
+        line = f"[{time.strftime('%H:%M:%S')}] {text}\n"
+        if _at_prompt:
+            blank = " " * (shutil.get_terminal_size().columns - 1)
+            line = f"\r{blank}\r{line}{PROMPT}"
+        print(line, end="", flush=True)
 
 
 def run(*args: str) -> subprocess.CompletedProcess:
@@ -133,10 +162,10 @@ def is_admin() -> bool:
     return bool(ctypes.windll.shell32.IsUserAnAdmin())
 
 
-def relaunch_as_admin() -> bool:
+def relaunch_as_admin(ssid: str, password: str) -> bool:
     """Spustí aplikaci znovu přes UAC. Vrací False, když uživatel výzvu odmítl."""
     script = Path(__file__).resolve()
-    parameters = subprocess.list2cmdline([str(script), *sys.argv[1:]])
+    parameters = subprocess.list2cmdline([str(script), f"--password={password}", "--", ssid])
     return ctypes.windll.shell32.ShellExecuteW(None, "runas", sys.executable, parameters, str(script.parent), 1) > 32
 
 
@@ -438,10 +467,10 @@ def wait_for_adapter(before: dict[int, str], ap: AccessPoint) -> int:
     raise HotspotError("Windows nevytvořil virtuální adaptér hotspotu.")
 
 
-def wait_for_windows_dhcp(if_index: int, ap: AccessPoint) -> str | None:
+def wait_for_windows_dhcp(if_index: int, ap: AccessPoint, stop: threading.Event) -> str | None:
     """Počká, jestli DHCP zajistí Windows, a vrátí adresu počítače v síti."""
     deadline = time.monotonic() + 10
-    while time.monotonic() < deadline:
+    while time.monotonic() < deadline and not stop.is_set():
         ap.check()
         adapter = adapters().get(if_index)
         if adapter is None:
@@ -468,51 +497,213 @@ def watch(ap: AccessPoint, if_index: int, stop: threading.Event) -> None:
             raise HotspotError("Virtuální adaptér hotspotu se vypnul.")
 
 
-def run_hotspot(ssid: str, password: str, stop: threading.Event) -> None:
-    """Jeden běh hotspotu. Skončí po požadavku na ukončení, nebo chybou."""
-    before = {index: adapter["Mac"] for index, adapter in adapters().items()}
-    ap = AccessPoint()
-    server = None
-    if_index = None
-    try:
-        ap.start(ssid, password)
-        if_index = wait_for_adapter(before, ap)
-        host = wait_for_windows_dhcp(if_index, ap)
-        if host is None:
-            server = start_own_dhcp(if_index)
-            host = server.host
-        log("Hotspot běží")
-        print(f"    Síť:    {ssid}\n    Heslo:  {password}\n    IP:     {host}\n    Ukončení: Ctrl+C\n", flush=True)
-        watch(ap, if_index, stop)
-    finally:
-        if server is not None:
-            stop_own_dhcp(server)
-        ap.stop()
-        # Další start pozná nový adaptér jen tehdy, když ten starý už není aktivní.
+class Hotspot:
+    """Řídí hotspot na pozadí. Název sítě a heslo drží jen v paměti procesu."""
+
+    def __init__(self, ssid: str, password: str) -> None:
+        self.ssid = ssid
+        self.password = password
+        self.enabled = True
+        self.closing = False
+        self.state = "spouští se"
+        self.host: str | None = None
+        self.ap: AccessPoint | None = None
+        self.changed = threading.Event()
+        self.thread = threading.Thread(target=self._loop, daemon=True)
+
+    def resume(self) -> None:
+        self.enabled = True
+        log("Spouštím hotspot...")
+        self.changed.set()
+
+    def pause(self) -> None:
+        self.enabled = False
+        log("Pozastavuji hotspot...")
+        self.changed.set()
+
+    def apply(self, message: str) -> None:
+        """Běžící hotspot se s novým nastavením restartuje."""
+        if self.enabled:
+            log(f"{message} Restartuji hotspot...")
+            self.changed.set()
+        else:
+            say(f"{message} Projeví se po příkazu start.")
+
+    def close(self, timeout: float = 20) -> None:
+        self.closing = True
+        self.changed.set()
+        self.thread.join(timeout)
+
+    def describe(self) -> str:
+        ap = self.ap
+        return (
+            f"  Stav:    {self.state}\n  Síť:     {self.ssid}\n  Heslo:   {self.password}\n"
+            f"  IP:      {self.host or '-'}\n  Klienti: {len(ap.devices) if ap else 0}"
+        )
+
+    def _loop(self) -> None:
+        while True:
+            self.changed.clear()
+            if self.closing:
+                return
+            if not self.enabled:
+                self.state = "pozastaven"
+                log("Hotspot je pozastaven. Znovu ho spustíš příkazem start.")
+                self.changed.wait()
+                continue
+            self.state = "spouští se"
+            try:
+                self._run()
+            except NeedsAdmin:
+                self._request_admin()
+            except Exception as exc:  # noqa: BLE001 - hotspot se má vždy pokusit znovu naběhnout
+                self.state = "chyba, zkouší se znovu"
+                log(f"{exc} Zkouším to znovu...")
+                self.changed.wait(RETRY_SECONDS)
+
+    def _request_admin(self) -> None:
+        log("Windows neposkytuje DHCP, vlastní server potřebuje práva správce.")
+        if relaunch_as_admin(self.ssid, self.password):
+            os._exit(0)
+        log("Bez práv správce nedostanou klienti IP adresu. Spusť aplikaci jako správce.")
+        self.enabled = False
+
+    def _run(self) -> None:
+        """Jeden běh hotspotu. Skončí po změně požadavku, nebo chybou."""
+        ssid, password = self.ssid, self.password
+        before = {index: adapter["Mac"] for index, adapter in adapters().items()}
+        ap = self.ap = AccessPoint()
+        server = None
+        if_index = None
+        try:
+            ap.start(ssid, password)
+            if_index = wait_for_adapter(before, ap)
+            host = wait_for_windows_dhcp(if_index, ap, self.changed)
+            if self.changed.is_set():
+                return
+            if host is None:
+                server = start_own_dhcp(if_index)
+                host = server.host
+            self.host = host
+            self.state = "běží"
+            log(f"Hotspot běží: síť {ssid}, heslo {password}, IP {host}")
+            watch(ap, if_index, self.changed)
+        finally:
+            self.host = self.ap = None
+            if server is not None:
+                stop_own_dhcp(server)
+            ap.stop()
+            if if_index is not None and not self.closing:
+                self._wait_until_down(if_index)
+
+    @staticmethod
+    def _wait_until_down(if_index: int) -> None:
+        """Další start pozná nový adaptér jen tehdy, když ten starý už není aktivní."""
         deadline = time.monotonic() + 12
-        while if_index is not None and not stop.is_set() and time.monotonic() < deadline:
+        while time.monotonic() < deadline:
             try:
                 if if_index not in adapters():
-                    break
+                    return
             except HotspotError:
-                break
+                return
             time.sleep(0.5)
+
+
+def ssid_problem(ssid: str) -> str | None:
+    if not 1 <= len(ssid.encode("utf-8")) <= 32 or not ssid.isprintable():
+        return "Název sítě musí mít 1 až 32 bajtů."
+    return None
+
+
+def password_problem(password: str) -> str | None:
+    if not (8 <= len(password) <= 63 and password.isascii() and password.isprintable()):
+        return "Heslo musí mít 8 až 63 znaků bez diakritiky."
+    return None
+
+
+def execute(hotspot: Hotspot, line: str) -> bool:
+    """Provede příkaz z konzole. Vrací False, když se má aplikace ukončit."""
+    parts = line.strip().split(maxsplit=1)
+    if not parts:
+        return True
+    command, value = parts[0].lower(), parts[1].strip() if len(parts) > 1 else ""
+
+    if command in ("help", "?"):
+        say(HELP)
+    elif command == "status":
+        say(hotspot.describe())
+    elif command == "ssid":
+        problem = ssid_problem(value)
+        if problem:
+            say(f"{problem} Použití: ssid NÁZEV")
+        elif value == hotspot.ssid:
+            say("Síť už se takto jmenuje.")
+        else:
+            hotspot.ssid = value
+            hotspot.apply(f"Název sítě je teď {value}.")
+    elif command == "heslo":
+        problem = password_problem(value)
+        if problem:
+            say(f"{problem} Použití: heslo HESLO")
+        elif value == hotspot.password:
+            say("Tohle heslo už je nastavené.")
+        else:
+            hotspot.password = value
+            hotspot.apply("Heslo je změněné.")
+    elif command == "stop":
+        hotspot.pause() if hotspot.enabled else say("Hotspot už je pozastavený.")
+    elif command == "start":
+        say("Hotspot už běží.") if hotspot.enabled else hotspot.resume()
+    elif command == "exit":
+        return False
+    else:
+        say(f"Neznámý příkaz {parts[0]}. Seznam příkazů vypíše help.")
+    return True
+
+
+def read_command() -> str:
+    global _at_prompt
+    interactive = sys.stdin.isatty()
+    _at_prompt = interactive
+    try:
+        return input(PROMPT if interactive else "")
+    finally:
+        _at_prompt = False
+
+
+def command_loop(hotspot: Hotspot) -> None:
+    while True:
+        try:
+            line = read_command()
+        except EOFError:  # Bez vstupu z konzole běží hotspot dál až do Ctrl+C.
+            while True:
+                time.sleep(1)
+        if not execute(hotspot, line):
+            return
+
+
+def shut_down(hotspot: Hotspot, timeout: float = 20) -> None:
+    global _at_prompt
+    _at_prompt = False
+    log("Vypínám hotspot...")
+    hotspot.close(timeout)
+    log("Hotspot je vypnutý.")
 
 
 _console_callback = None
 
 
-def handle_console_events(stop: threading.Event, finished: threading.Event) -> None:
-    """Ctrl+C i zavření okna hotspot korektně ukončí."""
+def handle_console_events(hotspot: Hotspot) -> None:
+    """Ctrl+C i zavření okna hotspot korektně vypnou a ukončí aplikaci."""
     global _console_callback
 
     def handler(event: int) -> bool:
-        stop.set()
-        if event not in (0, 1):  # Při zavření okna dá Windows na úklid jen pár sekund.
-            finished.wait(4)
-        return True
+        say()
+        shut_down(hotspot, 20 if event in (0, 1) else 4)  # Při zavření okna dá Windows jen pár sekund.
+        os._exit(0)
 
     _console_callback = ctypes.WINFUNCTYPE(wintypes.BOOL, wintypes.DWORD)(handler)
+    ctypes.windll.kernel32.SetConsoleCtrlHandler(None, False)  # Ctrl+C mohl vypnout rodičovský proces.
     ctypes.windll.kernel32.SetConsoleCtrlHandler(_console_callback, True)
 
 
@@ -521,34 +712,22 @@ def parse_arguments() -> argparse.Namespace:
     parser.add_argument("ssid", nargs="?", default=DEFAULT_SSID, help=f"název sítě (výchozí {DEFAULT_SSID})")
     parser.add_argument("-p", "--password", default=DEFAULT_PASSWORD, help=f"heslo (výchozí {DEFAULT_PASSWORD})")
     args = parser.parse_args()
-    if not 1 <= len(args.ssid.encode("utf-8")) <= 32:
-        parser.error("název sítě musí mít 1 až 32 bajtů")
-    if not (8 <= len(args.password) <= 63 and args.password.isascii() and args.password.isprintable()):
-        parser.error("heslo musí mít 8 až 63 znaků bez diakritiky")
+    problem = ssid_problem(args.ssid) or password_problem(args.password)
+    if problem:
+        parser.error(problem)
     return args
 
 
 def main() -> int:
     sys.stdout.reconfigure(errors="replace")
     args = parse_arguments()
-    stop, finished = threading.Event(), threading.Event()
-    handle_console_events(stop, finished)
+    hotspot = Hotspot(args.ssid, args.password)
+    handle_console_events(hotspot)
+    say("PocketAP - seznam příkazů vypíše help\n")
     log("Spouštím hotspot...")
-    try:
-        while not stop.is_set():
-            try:
-                run_hotspot(args.ssid, args.password, stop)
-            except NeedsAdmin:
-                log("Windows neposkytuje DHCP, vlastní server potřebuje práva správce.")
-                if relaunch_as_admin():
-                    return 0
-                exit_with_error("Bez práv správce nedostanou klienti IP adresu. Spusť aplikaci jako správce.")
-            except Exception as exc:  # noqa: BLE001 - hotspot se má vždy pokusit znovu naběhnout
-                log(f"{exc} Zkouším to znovu...")
-            stop.wait(RETRY_SECONDS)
-    finally:
-        finished.set()
-    log("Hotspot je vypnutý.")
+    hotspot.thread.start()
+    command_loop(hotspot)
+    shut_down(hotspot)
     return 0
 
 
