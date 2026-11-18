@@ -1,71 +1,71 @@
 # PocketAP
 
-Jednoduchý Wi-Fi hotspot pro Windows v jednom souboru, ovládaný z terminálu.
+A simple single-file Wi-Fi hotspot for Windows, controlled from the terminal.
 
-Mobilní hotspot ve Windows se bez připojení k internetu často nezapne. PocketAP internet nepotřebuje, takže síť vytvoříš kdykoli. Vznikne místní síť pro propojení zařízení. Internet do ní aplikace sdílí jen tehdy, když to zapneš příkazem `internet zap`.
+The Windows Mobile hotspot often refuses to turn on without an internet connection. PocketAP does not need internet, so you can create a network at any time. It creates a local network for connecting devices. The app only shares internet into it when you turn that on with `internet on`.
 
-## Požadavky
+## Requirements
 
-- Windows 11 a Wi-Fi adaptér s podporou Wi-Fi Direct
-- Python 3.11 nebo novější
-- Internet jen při prvním spuštění, kdy se automaticky nainstalují potřebné balíčky
+- Windows 11 and a Wi-Fi adapter that supports Wi-Fi Direct
+- Python 3.11 or newer
+- Internet access on first launch only, when the required packages are installed automatically
 
-## Spuštění
+## Running
 
 ```
 python pocketap.py
 ```
 
-Hotspot se hned zapne jako síť `PocketAP` s heslem `123456789`. Název a heslo můžeš zadat i při spuštění:
+The hotspot starts right away as the network `PocketAP` with the password `123456789`. You can also set the name and password at launch:
 
 ```
-python pocketap.py MojeSit -p MojeHeslo123
+python pocketap.py MyNetwork -p MyPassword123
 ```
 
-Výchozí heslo je snadné uhodnout, proto si pro delší používání nastav vlastní.
+The default password is easy to guess, so set your own for longer use.
 
-## Příkazy
+## Commands
 
-| Příkaz | Co udělá |
+| Command | What it does |
 | --- | --- |
-| `status` | zobrazí stav hotspotu |
-| `ssid NÁZEV` | změní název sítě |
-| `heslo NOVÉ_HESLO` | změní heslo (8 až 63 znaků bez diakritiky) |
-| `internet zap\|vyp` | zapne nebo vypne sdílení internetu (výchozí je vypnuto) |
-| `stop` | pozastaví hotspot |
-| `start` | znovu spustí hotspot |
-| `help` | zobrazí nápovědu |
-| `exit` | vypne hotspot a ukončí aplikaci |
+| `status` | shows the hotspot status |
+| `ssid NAME` | changes the network name |
+| `password NEW_PASSWORD` | changes the password (8 to 63 ASCII characters) |
+| `internet on\|off` | turns internet sharing on or off (off by default) |
+| `stop` | pauses the hotspot |
+| `start` | starts the hotspot again |
+| `help` | shows the help |
+| `exit` | turns off the hotspot and quits |
 
-Změna názvu, hesla nebo sdílení internetu za běhu hotspot restartuje a připojená zařízení se musí připojit znovu. Změny zůstávají jen v paměti, po dalším spuštění platí zase výchozí hodnoty.
+Changing the name, password, or internet sharing while running restarts the hotspot, and connected devices have to reconnect. Changes stay in memory only, so the next launch uses the default values again.
 
-Aplikaci ukončíš také klávesami Ctrl+C nebo zavřením okna.
+You can also quit with Ctrl+C or by closing the window.
 
-## Sdílení internetu
+## Internet sharing
 
-Příkaz `internet zap` sdílí do hotspotu aktuální připojení počítače k internetu přes službu Sdílení připojení k Internetu ve Windows.
+The `internet on` command shares the computer's current internet connection into the hotspot using Internet Connection Sharing in Windows.
 
-- Sdílení potřebuje práva správce, aplikace si o ně při zapnutí řekne a otevře se v novém okně.
-- Windows umí sdílet jen jedno připojení najednou, takže jiné zapnuté sdílení se tím vypne.
-- Když se počítač přepojí na jinou síť, načti ji do hotspotu příkazy `stop` a `start`.
-- Pokud sdílení selže, hotspot běží dál jako místní síť bez internetu.
+- Sharing requires administrator rights. The app asks for them when you turn it on and reopens in a new window.
+- Windows can only share one connection at a time, so any other active sharing is turned off.
+- If the computer switches to a different network, run `stop` and `start` to share the new one.
+- If sharing fails, the hotspot keeps running as a local network without internet.
 
-## Nízká latence
+## Low latency
 
-Za běhu hotspotu aplikace sama vypne úsporu energie Wi-Fi (i na baterii) a hledání Wi-Fi sítí na pozadí. Obojí totiž zdržuje pakety od klientů. Po zastavení hotspotu vrátí původní nastavení.
+While the hotspot runs, the app turns off Wi-Fi power saving (on battery too) and background Wi-Fi network scanning, because both delay packets from clients. It restores the original settings when the hotspot stops.
 
-Pro nejnižší zpoždění pomůže ještě:
+For the lowest latency, these also help:
 
-- Nepřipojovat počítač k jiné Wi-Fi a nechat `internet vyp`. Jinak karta přepíná mezi dvěma kanály.
-- Vypnout Bluetooth, pokud ho nepotřebuješ. Wi-Fi a Bluetooth často sdílejí jednu anténu.
-- Úspora energie ve Windows vypnutá, režim napájení Nejlepší výkon, ideálně na nabíječce.
-- V ovladači Wi-Fi vypnout úsporné režimy a roaming. U karet Realtek v PowerShellu spuštěném jako správce:
-  `Set-NetAdapterAdvancedProperty -Name "Wi-Fi" -RegistryKeyword "LpsEn" -DisplayValue "Low"` a
+- Do not connect the computer to another Wi-Fi network and keep `internet off`. Otherwise the card switches between two channels.
+- Turn off Bluetooth if you do not need it. Wi-Fi and Bluetooth often share one antenna.
+- Keep Energy saver in Windows off, set the power mode to Best performance, and ideally stay plugged in.
+- Turn off power saving modes and roaming in the Wi-Fi driver. For Realtek cards, in PowerShell run as administrator:
+  `Set-NetAdapterAdvancedProperty -Name "Wi-Fi" -RegistryKeyword "LpsEn" -DisplayValue "Low"` and
   `Set-NetAdapterAdvancedProperty -Name "Wi-Fi" -RegistryKeyword "RegRoamLevel" -DisplayValue "1. Disable"`.
-- V telefonu vypnout úsporu baterie a zapnout herní režim.
+- On your phone, turn off battery saver and turn on game mode.
 
-## Když něco nejde
+## Troubleshooting
 
-- Zkontroluj, že je zapnutá Wi-Fi a vypnutý režim Letadlo.
-- Vypni Mobilní hotspot ve Windows a Miracast, protože používají stejný Wi-Fi Direct.
-- Pokud adresy klientům nepřidělí Windows, aplikace si vyžádá práva správce a spustí vlastní DHCP server.
+- Check that Wi-Fi is on and Airplane mode is off.
+- Turn off Mobile hotspot in Windows and Miracast, because they use the same Wi-Fi Direct.
+- If Windows does not assign addresses to clients, the app asks for administrator rights and starts its own DHCP server.

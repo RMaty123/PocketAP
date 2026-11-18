@@ -1,12 +1,12 @@
-"""PocketAP - Wi-Fi hotspot pro Windows, který běží i bez připojení k internetu.
+"""PocketAP - Wi-Fi hotspot for Windows that runs even without an internet connection.
 
-Použití:  python pocketap.py [SSID] [-p HESLO]
-Za běhu se ovládá příkazy v konzoli, seznam vypíše příkaz help.
+Usage:  python pocketap.py [SSID] [-p PASSWORD]
+While running, it is controlled by console commands. The help command lists them.
 
-Hotspot běží přes Wi-Fi Direct Legacy AP. Adresy klientům přiděluje Windows (ICS),
-a když to neudělá, spustí se vlastní DHCP server (ten vyžaduje práva správce).
-Sdílení internetu je ve výchozím stavu vypnuté, zapíná se příkazem internet zap.
-Chybějící balíčky WinRT si aplikace při prvním spuštění sama nainstaluje.
+The hotspot runs on Wi-Fi Direct Legacy AP. Windows (ICS) assigns client addresses,
+and when it does not, a built-in DHCP server starts (this requires administrator rights).
+Internet sharing is off by default, the command internet on turns it on.
+Missing WinRT packages are installed automatically on first launch.
 """
 from __future__ import annotations
 
@@ -44,10 +44,10 @@ WINRT_PACKAGES = [
 
 
 def exit_with_error(message: str) -> None:
-    """Vypíše chybu a nechá okno otevřené, aby šla přečíst i po spuštění dvojklikem."""
+    """Print an error and keep the window open so it can be read after a double-click launch."""
     print(message, flush=True)
     try:
-        input("Stiskni Enter pro zavření okna...")
+        input("Press Enter to close this window...")
     except (EOFError, OSError, RuntimeError):
         pass
     sys.exit(1)
@@ -62,11 +62,11 @@ def load_winrt():
 
 
 def install_winrt() -> None:
-    print("Instaluji potřebné balíčky, poprvé je potřeba internet...", flush=True)
+    print("Installing required packages, the first launch needs internet access...", flush=True)
     command = [sys.executable, "-m", "pip", "install", "--disable-pip-version-check", *WINRT_PACKAGES]
     if subprocess.run(command, check=False).returncode != 0:
-        exit_with_error("Balíčky se nepodařilo nainstalovat. Je potřeba internet a Python 3.11 nebo novější.")
-    site.addsitedir(site.getusersitepackages())  # Složka mohla vzniknout až při této instalaci.
+        exit_with_error("Could not install the packages. Internet access and Python 3.11 or newer are required.")
+    site.addsitedir(site.getusersitepackages())  # The folder may have been created by this install.
     importlib.invalidate_caches()
 
 
@@ -82,7 +82,7 @@ RETRY_SECONDS = 3
 FIREWALL_RULE = "PocketAP DHCP"
 LEASE_SECONDS = 12 * 3600
 WIFI_POWER_SUBGROUP = "19cbb8fa-5279-450e-9fac-8a3d5fedd0c1"
-WIFI_POWER_SETTING = "12bbebe6-58d6-4636-95bb-3217ef867c1a"  # Úspora energie Wi-Fi, 0 je maximální výkon.
+WIFI_POWER_SETTING = "12bbebe6-58d6-4636-95bb-3217ef867c1a"  # Wi-Fi power saving, 0 is maximum performance.
 WLAN_BACKGROUND_SCAN, WLAN_STREAMING_MODE = 2, 3  # WLAN_INTF_OPCODE
 
 ADAPTERS_PS = r"""
@@ -121,7 +121,7 @@ try {
     Where-Object { $_.InterfaceIndex -ne $hotspot } |
     Sort-Object { $_.RouteMetric + (Get-NetIPInterface -InterfaceIndex $_.InterfaceIndex -AddressFamily IPv4).InterfaceMetric } |
     Select-Object -First 1
-  if (-not $route) { throw 'Počítač teď není připojený k internetu.' }
+  if (-not $route) { throw 'This computer is not connected to the internet right now.' }
   $upstream = Get-NetAdapter -IncludeHidden -InterfaceIndex $route.InterfaceIndex
   $guid = (Get-NetAdapter -IncludeHidden -InterfaceIndex $hotspot).InterfaceGuid
   $lan = $null
@@ -131,7 +131,7 @@ try {
     Start-Sleep -Milliseconds 500
   }
   $wan = Get-SharingConfig | Where-Object { $_.Guid -eq $upstream.InterfaceGuid } | Select-Object -First 1
-  if (-not $lan -or -not $wan) { throw 'Windows u tohoto připojení sdílení nepodporuje.' }
+  if (-not $lan -or -not $wan) { throw 'Windows does not support sharing on this connection.' }
   Stop-AllSharing
   $wan.Config.EnableSharing(0)
   $lan.Config.EnableSharing(1)
@@ -142,7 +142,7 @@ try {
     if ($ip) { break }
     Start-Sleep -Milliseconds 500
   }
-  if (-not $ip) { throw 'Hotspot nedostal adresu od sdílení Windows.' }
+  if (-not $ip) { throw 'The hotspot did not get an address from Windows sharing.' }
   [pscustomobject]@{ Ip = $ip; Upstream = $upstream.Name }
 } catch {
   $message = $_.Exception.Message
@@ -157,25 +157,25 @@ try { Stop-AllSharing } catch { [pscustomobject]@{ Error = $_.Exception.Message 
 
 
 class HotspotError(RuntimeError):
-    """Chyba s textem pro uživatele. Hotspot se po ní zkusí spustit znovu."""
+    """Error with a message for the user. The hotspot tries to start again after it."""
 
 
 class NeedsAdmin(Exception):
-    """Windows neposkytuje DHCP a vlastní server vyžaduje práva správce."""
+    """The requested setup requires administrator rights."""
 
 
 PROMPT = "pocketap> "
-HELP = """Příkazy:
-  status            zobrazí stav hotspotu
-  ssid NÁZEV        změní název sítě
-  heslo NOVÉ_HESLO  změní heslo (8 až 63 znaků bez diakritiky)
-  internet zap|vyp  zapne nebo vypne sdílení internetu (výchozí je vyp)
-  stop              pozastaví hotspot
-  start             znovu spustí hotspot
-  help              zobrazí tuto nápovědu
-  exit              vypne hotspot a ukončí aplikaci
+HELP = """Commands:
+  status                 show the hotspot status
+  ssid NAME              change the network name
+  password NEW_PASSWORD  change the password (8 to 63 ASCII characters)
+  internet on|off        turn internet sharing on or off (default is off)
+  stop                   pause the hotspot
+  start                  start the hotspot again
+  help                   show this help
+  exit                   turn off the hotspot and quit
 
-Změny platí jen do ukončení aplikace."""
+Changes last only until the application exits."""
 
 _output_lock = threading.Lock()
 _last_message = None
@@ -183,13 +183,13 @@ _at_prompt = False
 
 
 def say(text: str = "") -> None:
-    """Vypíše odpověď na příkaz."""
+    """Print the reply to a command."""
     with _output_lock:
         print(text, flush=True)
 
 
 def log(text: str) -> None:
-    """Vypíše událost s časem nad řádek s výzvou. Stejnou zprávu po sobě neopakuje."""
+    """Print a timestamped event above the prompt line. Repeated messages are skipped."""
     global _last_message
     with _output_lock:
         if text == _last_message:
@@ -221,11 +221,11 @@ def powershell_json(script: str, timeout: float = 30) -> list:
         ).stdout
         return json.loads(output) if output.strip() else []
     except (OSError, ValueError, subprocess.SubprocessError) as exc:
-        raise HotspotError(f"Stav síťových adaptérů nelze zjistit: {exc}") from exc
+        raise HotspotError(f"Could not read the network adapter status: {exc}") from exc
 
 
 def adapters() -> dict[int, dict]:
-    """Aktivní virtuální adaptéry Wi-Fi Direct podle čísla rozhraní."""
+    """Active Wi-Fi Direct virtual adapters by interface index."""
     return {item["Index"]: item for item in powershell_json(ADAPTERS_PS)}
 
 
@@ -234,7 +234,7 @@ def is_admin() -> bool:
 
 
 def relaunch_as_admin(ssid: str, password: str, internet: bool) -> bool:
-    """Spustí aplikaci znovu přes UAC. Vrací False, když uživatel výzvu odmítl."""
+    """Relaunch the application through UAC. Returns False when the user declines the prompt."""
     script = Path(__file__).resolve()
     options = [f"--password={password}", *(["--internet"] if internet else [])]
     parameters = subprocess.list2cmdline([str(script), *options, "--", ssid])
@@ -242,7 +242,7 @@ def relaunch_as_admin(ssid: str, password: str, internet: bool) -> bool:
 
 
 def quietly(action) -> None:
-    """Úklid musí pokračovat, i když jeden krok selže."""
+    """Cleanup must continue even when one step fails."""
     try:
         action()
     except OSError:
@@ -268,7 +268,7 @@ class WlanInterfaceList(ctypes.Structure):
 
 
 class IfRow(ctypes.Structure):
-    """MIB_IF_ROW2, z něhož se čte jen stav rozhraní."""
+    """MIB_IF_ROW2, only the interface status is read from it."""
 
     _fields_ = [
         ("InterfaceLuid", ctypes.c_uint64), ("InterfaceIndex", wintypes.ULONG), ("InterfaceGuid", GUID),
@@ -283,7 +283,7 @@ class IfRow(ctypes.Structure):
 
 
 def interface_up(if_index: int) -> bool:
-    """Stav rozhraní přímo od Windows, bez spouštění PowerShellu a bez dotazu na statistiky ovladače."""
+    """Interface status straight from Windows, without PowerShell or querying driver statistics."""
     row = IfRow(InterfaceIndex=if_index)
     if ctypes.windll.iphlpapi.GetIfEntry2Ex(2, ctypes.byref(row)):  # MibIfEntryNormalWithoutStatistics
         return False
@@ -296,7 +296,7 @@ def check_win32(code: int) -> None:
 
 
 class LowLatency:
-    """Za běhu hotspotu vypne na Wi-Fi to, co zdržuje pakety. Metoda stop() vrátí vše jako dřív."""
+    """Turns off what delays Wi-Fi packets while the hotspot runs. stop() restores everything."""
 
     def __init__(self) -> None:
         self.wlan: wintypes.HANDLE | None = None
@@ -305,16 +305,16 @@ class LowLatency:
 
     def start(self) -> None:
         done, failed = [], []
-        for name, action in (("Wi-Fi bez úspory energie", self._max_power), ("bez hledání sítí", self._quiet_wlan)):
+        for name, action in (("Wi-Fi power saving off", self._max_power), ("network scanning off", self._quiet_wlan)):
             try:
                 action()
                 done.append(name)
             except OSError as exc:
                 failed.append(f"{name} ({exc.strerror or exc})")
         if done:
-            log(f"Nízká latence: {', '.join(done)}.")
+            log(f"Low latency: {', '.join(done)}.")
         if failed:
-            log(f"Nepodařilo se nastavit: {', '.join(failed)}.")
+            log(f"Could not apply: {', '.join(failed)}.")
 
     def stop(self) -> None:
         if self.wlan is not None:
@@ -323,7 +323,7 @@ class LowLatency:
             for guid in self.interfaces:
                 wlanapi.WlanSetInterface(self.wlan, ctypes.byref(guid), WLAN_STREAMING_MODE, 4, ctypes.byref(off), None)
                 wlanapi.WlanSetInterface(self.wlan, ctypes.byref(guid), WLAN_BACKGROUND_SCAN, 4, ctypes.byref(on), None)
-            wlanapi.WlanCloseHandle(self.wlan, None)  # Zavřením handle by Windows nastavení vrátil i sám.
+            wlanapi.WlanCloseHandle(self.wlan, None)  # Closing the handle would also make Windows restore these settings.
             self.wlan, self.interfaces = None, []
         if self.power is not None:
             scheme, ac, dc = self.power
@@ -331,10 +331,10 @@ class LowLatency:
             try:
                 self._write_power(scheme, ac, dc)
             except OSError as exc:
-                log(f"Úsporu energie Wi-Fi se nepodařilo vrátit: {exc.strerror or exc}")
+                log(f"Could not restore Wi-Fi power saving: {exc.strerror or exc}")
 
     def _max_power(self) -> None:
-        """Úspora energie nechává kartu mezi pakety usínat a pakety od klientů pak čekají."""
+        """Power saving lets the card sleep between packets, so packets from clients have to wait."""
         powrprof = ctypes.windll.powrprof
         scheme = self._active_scheme()
         subgroup, setting = GUID.parse(WIFI_POWER_SUBGROUP), GUID.parse(WIFI_POWER_SETTING)
@@ -351,7 +351,7 @@ class LowLatency:
         where = (None, ctypes.byref(scheme), ctypes.byref(subgroup), ctypes.byref(setting))
         check_win32(powrprof.PowerWriteACValueIndex(*where, ac))
         check_win32(powrprof.PowerWriteDCValueIndex(*where, dc))
-        check_win32(powrprof.PowerSetActiveScheme(None, ctypes.byref(self._active_scheme())))  # Projeví změnu.
+        check_win32(powrprof.PowerSetActiveScheme(None, ctypes.byref(self._active_scheme())))  # Applies the change.
 
     @staticmethod
     def _active_scheme() -> GUID:
@@ -363,7 +363,7 @@ class LowLatency:
             ctypes.windll.kernel32.LocalFree(pointer)
 
     def _quiet_wlan(self) -> None:
-        """Hledání sítí odvádí kartu z kanálu hotspotu a klienti mezitím nemohou vysílat."""
+        """Network scans pull the card off the hotspot channel and clients cannot transmit meanwhile."""
         wlanapi = ctypes.windll.wlanapi
         handle, version = wintypes.HANDLE(), wintypes.DWORD()
         check_win32(wlanapi.WlanOpenHandle(2, None, ctypes.byref(version), ctypes.byref(handle)))
@@ -376,19 +376,19 @@ class LowLatency:
         finally:
             wlanapi.WlanFreeMemory(listing)
         on, off = wintypes.BOOL(True), wintypes.BOOL(False)
-        code = 2  # ERROR_FILE_NOT_FOUND, když žádná Wi-Fi karta není.
+        code = 2  # ERROR_FILE_NOT_FOUND when there is no Wi-Fi card.
         for guid in guids:
             code = wlanapi.WlanSetInterface(handle, ctypes.byref(guid), WLAN_BACKGROUND_SCAN, 4, ctypes.byref(off), None)
             if code == 0:
                 self.interfaces.append(guid)
-                # Streamovací režim jde zapnout jen při připojení k jiné Wi-Fi, jinde chyba nevadí.
+                # Streaming mode only works while connected to another Wi-Fi network, errors elsewhere are fine.
                 wlanapi.WlanSetInterface(handle, ctypes.byref(guid), WLAN_STREAMING_MODE, 4, ctypes.byref(on), None)
         if not self.interfaces:
             raise ctypes.WinError(code)
 
 
 class AccessPoint:
-    """Běžící Wi-Fi Direct Legacy AP včetně příjmu klientů."""
+    """A running Wi-Fi Direct Legacy AP, including accepting clients."""
 
     def __init__(self) -> None:
         self.publisher = None
@@ -416,16 +416,16 @@ class AccessPoint:
             legacy.passphrase = credential
             self.publisher.start()
             if not self.answered.wait(25):
-                raise HotspotError("Windows do 25 s nepotvrdil spuštění hotspotu.")
+                raise HotspotError("Windows did not confirm the hotspot start within 25 s.")
             self.check()
             self.listener = wd.WiFiDirectConnectionListener()
             self.listener_token = self.listener.add_connection_requested(self._on_request)
         except OSError as exc:
-            raise HotspotError(f"Wi-Fi Direct selhalo: {exc}") from exc
+            raise HotspotError(f"Wi-Fi Direct failed: {exc}") from exc
 
     def check(self) -> None:
         if self.ended.is_set():
-            raise HotspotError(self.error or "Windows hotspot zastavil.")
+            raise HotspotError(self.error or "Windows stopped the hotspot.")
 
     def _on_status(self, _sender, args) -> None:
         status = wd.WiFiDirectAdvertisementPublisherStatus(args.status).name
@@ -439,8 +439,8 @@ class AccessPoint:
     @staticmethod
     def _explain(error: int) -> str:
         if error == wd.WiFiDirectError.RESOURCE_IN_USE:
-            return "Wi-Fi Direct je obsazené. Vypni Mobilní hotspot nebo Miracast."
-        return "Windows hotspot přerušil. Zkontroluj, že je zapnutá Wi-Fi a vypnutý režim Letadlo."
+            return "Wi-Fi Direct is in use. Turn off Mobile hotspot or Miracast."
+        return "Windows interrupted the hotspot. Check that Wi-Fi is on and Airplane mode is off."
 
     def _on_request(self, _sender, args) -> None:
         try:
@@ -457,16 +457,16 @@ class AccessPoint:
             if device is None:
                 return
             pairs = device.get_connection_endpoint_pairs()
-            address = pairs[0].remote_host_name.display_name if len(pairs) else "IP zatím neznámá"
+            address = pairs[0].remote_host_name.display_name if len(pairs) else "IP not known yet"
             token = device.add_connection_status_changed(self._on_device_status)
             with self.lock:
                 if self.stopping:
                     device.close()
                     return
                 self.devices[device_id] = (device, token, name)
-            log(f"+ Připojeno: {name} ({address})")
+            log(f"+ Connected: {name} ({address})")
         except OSError as exc:
-            log(f"Klienta {name} se nepodařilo přijmout: {exc}")
+            log(f"Could not accept client {name}: {exc}")
         finally:
             quietly(request.close)
 
@@ -485,7 +485,7 @@ class AccessPoint:
             entry = self.devices.pop(device_id, None)
         if entry:
             self._close_device(entry)
-            log(f"- Odpojeno: {entry[2]}")
+            log(f"- Disconnected: {entry[2]}")
 
     @staticmethod
     def _close_device(entry: tuple) -> None:
@@ -510,7 +510,7 @@ class AccessPoint:
 
 
 class DhcpServer:
-    """Malý DHCP server pro síť /24, který běží jen na rozhraní hotspotu."""
+    """Small DHCP server for a /24 network that runs only on the hotspot interface."""
 
     DISCOVER, OFFER, REQUEST, ACK, NAK, RELEASE = 1, 2, 3, 5, 6, 7
 
@@ -524,7 +524,7 @@ class DhcpServer:
         self.thread: threading.Thread | None = None
 
     def assign(self, mac: bytes, wanted: str | None, seconds: int) -> str | None:
-        """Vrátí současnou, požadovanou, nebo první volnou adresu."""
+        """Return the current, requested, or first free address."""
         now = time.time()
         self.leases = {key: lease for key, lease in self.leases.items() if lease[1] > now}
         taken = {lease[0] for key, lease in self.leases.items() if key != mac}
@@ -536,7 +536,7 @@ class DhcpServer:
         return None
 
     def packet(self, request: bytes, kind: int, ip: str = "0.0.0.0") -> tuple[bytes, str]:
-        """Sestaví odpověď a určí, kam se má poslat."""
+        """Build a reply and work out where to send it."""
         host = socket.inet_aton(self.host)
         options = bytes((53, 1, kind, 54, 4)) + host
         if kind != self.NAK:
@@ -552,7 +552,7 @@ class DhcpServer:
         return body.ljust(300, b"\x00"), target
 
     def reply(self, data: bytes) -> tuple[bytes, str] | None:
-        """Zpracuje zprávu klienta a vrátí odpověď, pokud nějaká patří."""
+        """Process a client message and return a reply when one is due."""
         valid = len(data) >= 240 and data[:3] == b"\x01\x01\x06" and data[236:240] == b"\x63\x82\x53\x63"
         if not valid or data[24:28] != bytes(4):
             return None
@@ -592,14 +592,14 @@ class DhcpServer:
         sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM, socket.IPPROTO_UDP)
         sock.setsockopt(socket.SOL_SOCKET, socket.SO_BROADCAST, 1)
         sock.setsockopt(socket.IPPROTO_IP, 31, socket.htonl(self.if_index))  # IP_UNICAST_IF
-        for attempt in range(16):  # Nová adresa rozhraní chvíli naskakuje.
+        for attempt in range(16):  # A new interface address takes a moment to come up.
             try:
                 sock.bind((self.host, 67))
                 break
             except OSError as exc:
                 if attempt == 15:
                     sock.close()
-                    raise HotspotError(f"DHCP server nelze spustit na {self.host}: {exc}") from exc
+                    raise HotspotError(f"Could not start the DHCP server on {self.host}: {exc}") from exc
                 time.sleep(0.5)
         self.sock = sock
         self.thread = threading.Thread(target=self._serve, daemon=True)
@@ -613,7 +613,7 @@ class DhcpServer:
                     if answer:
                         self.sock.sendto(answer[0], (answer[1], 68))
             except (OSError, IndexError, ValueError):
-                continue  # Vadný paket ani chyba soketu server neukončí.
+                continue  # Neither a bad packet nor a socket error stops the server.
 
     def stop(self) -> None:
         self.stopped.set()
@@ -624,7 +624,7 @@ class DhcpServer:
 
 
 def free_host_address(if_index: int) -> str:
-    """Najde podsíť, kterou nepoužívá žádné jiné rozhraní počítače."""
+    """Find a subnet that no other interface on this computer uses."""
     script = (
         "Get-NetIPAddress -AddressFamily IPv4 -ErrorAction SilentlyContinue | "
         f"Where-Object {{ $_.InterfaceIndex -ne {if_index} }} | "
@@ -635,7 +635,7 @@ def free_host_address(if_index: int) -> str:
         candidate = ipaddress.ip_network(f"192.168.{number}.0/24")
         if not any(candidate.overlaps(network) for network in used):
             return f"192.168.{number}.1"
-    raise HotspotError("Nenašla se volná podsíť pro hotspot.")
+    raise HotspotError("No free subnet found for the hotspot.")
 
 
 def start_own_dhcp(if_index: int) -> DhcpServer:
@@ -647,7 +647,7 @@ def start_own_dhcp(if_index: int) -> DhcpServer:
         f"address={host}", "mask=255.255.255.0", "gateway=none",
     )
     if result.returncode != 0:
-        raise HotspotError(f"Adresu {host} nelze nastavit: {result.stdout.strip()}")
+        raise HotspotError(f"Could not set address {host}: {result.stdout.strip()}")
     python = getattr(sys, "_base_executable", None) or sys.executable
     run("netsh", "advfirewall", "firewall", "delete", "rule", f"name={FIREWALL_RULE}")
     run(
@@ -666,27 +666,27 @@ def stop_own_dhcp(server: DhcpServer) -> None:
 
 
 def start_sharing(if_index: int) -> tuple[str, str]:
-    """Zapne sdílení internetu do hotspotu a vrátí adresu počítače v síti a název sdíleného připojení."""
+    """Turn on internet sharing into the hotspot. Returns the computer's address and the shared connection name."""
     script = f"$hotspot = {if_index}\n{SHARING_PS}\n{START_SHARING_PS}"
     result = powershell_json(script, timeout=60)
     info = result[0] if result else {}
     if not info.get("Ip"):
-        raise HotspotError(info.get("Error") or "Windows sdílení nezapnul.")
+        raise HotspotError(info.get("Error") or "Windows did not turn sharing on.")
     return info["Ip"], info["Upstream"]
 
 
 def stop_sharing() -> None:
-    """Úklid po hotspotu nesmí selhat, případná chyba se jen vypíše."""
+    """Hotspot cleanup must not fail, any error is only reported."""
     try:
         result = powershell_json(f"{SHARING_PS}\n{STOP_SHARING_PS}", timeout=60)
     except HotspotError as exc:
         result = [{"Error": str(exc)}]
     if result:
-        log(f"Sdílení internetu se nepodařilo vypnout: {result[0].get('Error')}")
+        log(f"Could not turn off internet sharing: {result[0].get('Error')}")
 
 
 def wait_for_adapter(before: dict[int, str], ap: AccessPoint) -> int:
-    """Najde virtuální adaptér, který vznikl spuštěním hotspotu."""
+    """Find the virtual adapter created by starting the hotspot."""
     deadline = time.monotonic() + 20
     while time.monotonic() < deadline:
         ap.check()
@@ -694,17 +694,17 @@ def wait_for_adapter(before: dict[int, str], ap: AccessPoint) -> int:
             if before.get(index) != adapter["Mac"]:
                 return index
         time.sleep(0.5)
-    raise HotspotError("Windows nevytvořil virtuální adaptér hotspotu.")
+    raise HotspotError("Windows did not create the hotspot virtual adapter.")
 
 
 def wait_for_windows_dhcp(if_index: int, ap: AccessPoint, stop: threading.Event) -> str | None:
-    """Počká, jestli DHCP zajistí Windows, a vrátí adresu počítače v síti."""
+    """Wait to see whether Windows provides DHCP and return the computer's address on the network."""
     deadline = time.monotonic() + 10
     while time.monotonic() < deadline and not stop.is_set():
         ap.check()
         adapter = adapters().get(if_index)
         if adapter is None:
-            raise HotspotError("Virtuální adaptér hotspotu zmizel.")
+            raise HotspotError("The hotspot virtual adapter disappeared.")
         if adapter["Dhcp"]:
             return adapter["Dhcp"][0]
         time.sleep(1)
@@ -712,7 +712,7 @@ def wait_for_windows_dhcp(if_index: int, ap: AccessPoint, stop: threading.Event)
 
 
 def watch(ap: AccessPoint, if_index: int, stop: threading.Event) -> None:
-    """Hlídá hotspot až do ukončení. Při výpadku vyvolá chybu, která spustí restart."""
+    """Monitor the hotspot until it ends. An outage raises an error that triggers a restart."""
     seconds = missing = 0
     while not stop.wait(1):
         ap.check()
@@ -721,11 +721,11 @@ def watch(ap: AccessPoint, if_index: int, stop: threading.Event) -> None:
             continue
         missing = 0 if interface_up(if_index) else missing + 1
         if missing >= 2:
-            raise HotspotError("Virtuální adaptér hotspotu se vypnul.")
+            raise HotspotError("The hotspot virtual adapter went down.")
 
 
 class Hotspot:
-    """Řídí hotspot na pozadí. Název sítě a heslo drží jen v paměti procesu."""
+    """Runs the hotspot in the background. The network name and password stay in process memory only."""
 
     def __init__(self, ssid: str, password: str, internet: bool = False) -> None:
         self.ssid = ssid
@@ -734,7 +734,7 @@ class Hotspot:
         self.upstream: str | None = None
         self.enabled = True
         self.closing = False
-        self.state = "spouští se"
+        self.state = "starting"
         self.host: str | None = None
         self.ap: AccessPoint | None = None
         self.changed = threading.Event()
@@ -742,21 +742,21 @@ class Hotspot:
 
     def resume(self) -> None:
         self.enabled = True
-        log("Spouštím hotspot...")
+        log("Starting hotspot...")
         self.changed.set()
 
     def pause(self) -> None:
         self.enabled = False
-        log("Pozastavuji hotspot...")
+        log("Pausing hotspot...")
         self.changed.set()
 
     def apply(self, message: str) -> None:
-        """Běžící hotspot se s novým nastavením restartuje."""
+        """A running hotspot restarts with the new settings."""
         if self.enabled:
-            log(f"{message} Restartuji hotspot...")
+            log(f"{message} Restarting hotspot...")
             self.changed.set()
         else:
-            say(f"{message} Projeví se po příkazu start.")
+            say(f"{message} Takes effect after the start command.")
 
     def close(self, timeout: float = 20) -> None:
         self.closing = True
@@ -765,14 +765,14 @@ class Hotspot:
 
     def internet_state(self) -> str:
         if self.upstream:
-            return f"sdílí se z připojení {self.upstream}"
-        return "zapnuto, zatím se nesdílí" if self.internet else "vypnuto"
+            return f"shared from {self.upstream}"
+        return "on, not shared yet" if self.internet else "off"
 
     def describe(self) -> str:
         ap = self.ap
         return (
-            f"  Stav:     {self.state}\n  Síť:      {self.ssid}\n  Heslo:    {self.password}\n"
-            f"  IP:       {self.host or '-'}\n  Klienti:  {len(ap.devices) if ap else 0}\n"
+            f"  Status:   {self.state}\n  Network:  {self.ssid}\n  Password: {self.password}\n"
+            f"  IP:       {self.host or '-'}\n  Clients:  {len(ap.devices) if ap else 0}\n"
             f"  Internet: {self.internet_state()}"
         )
 
@@ -782,45 +782,45 @@ class Hotspot:
             if self.closing:
                 return
             if not self.enabled:
-                self.state = "pozastaven"
-                log("Hotspot je pozastaven. Znovu ho spustíš příkazem start.")
+                self.state = "paused"
+                log("The hotspot is paused. The start command runs it again.")
                 self.changed.wait()
                 continue
-            self.state = "spouští se"
+            self.state = "starting"
             try:
                 self._run()
             except NeedsAdmin:
                 self._request_admin()
-            except Exception as exc:  # noqa: BLE001 - hotspot se má vždy pokusit znovu naběhnout
-                self.state = "chyba, zkouší se znovu"
-                log(f"{exc} Zkouším to znovu...")
+            except Exception as exc:  # noqa: BLE001 - the hotspot must always try to come back up
+                self.state = "error, retrying"
+                log(f"{exc} Retrying...")
                 self.changed.wait(RETRY_SECONDS)
 
     def _request_admin(self) -> None:
         if self.internet:
-            log("Sdílení internetu potřebuje práva správce.")
+            log("Internet sharing requires administrator rights.")
         else:
-            log("Windows neposkytuje DHCP, vlastní server potřebuje práva správce.")
+            log("Windows provides no DHCP, the built-in server requires administrator rights.")
         if relaunch_as_admin(self.ssid, self.password, self.internet):
             os._exit(0)
         if self.internet:
             self.internet = False
-            log("Bez práv správce se internet sdílet nedá, hotspot poběží bez něj.")
+            log("Internet cannot be shared without administrator rights, the hotspot will run without it.")
             return
-        log("Bez práv správce nedostanou klienti IP adresu. Spusť aplikaci jako správce.")
+        log("Clients will not get an IP address without administrator rights. Run the application as administrator.")
         self.enabled = False
 
     def _share_internet(self, if_index: int) -> str | None:
-        """Selhání sdílení hotspot neshodí, poběží dál jako místní síť."""
+        """A sharing failure does not bring the hotspot down, it keeps running as a local network."""
         try:
             host, self.upstream = start_sharing(if_index)
             return host
         except HotspotError as exc:
-            log(f"Internet se nepodařilo sdílet: {exc} Hotspot poběží bez něj.")
+            log(f"Could not share the internet: {exc} The hotspot will run without it.")
             return None
 
     def _run(self) -> None:
-        """Jeden běh hotspotu. Skončí po změně požadavku, nebo chybou."""
+        """One hotspot run. Ends when the requested state changes or on an error."""
         ssid, password, internet = self.ssid, self.password, self.internet
         if internet and not is_admin():
             raise NeedsAdmin
@@ -841,9 +841,9 @@ class Hotspot:
                 server = start_own_dhcp(if_index)
                 host = server.host
             self.host = host
-            self.state = "běží"
-            shared = f", internet z připojení {self.upstream}" if self.upstream else ""
-            log(f"Hotspot běží: síť {ssid}, heslo {password}, IP {host}{shared}")
+            self.state = "running"
+            shared = f", internet from {self.upstream}" if self.upstream else ""
+            log(f"Hotspot running: network {ssid}, password {password}, IP {host}{shared}")
             tuning.start()
             watch(ap, if_index, self.changed)
         finally:
@@ -860,7 +860,7 @@ class Hotspot:
 
     @staticmethod
     def _wait_until_down(if_index: int) -> None:
-        """Další start pozná nový adaptér jen tehdy, když ten starý už není aktivní."""
+        """The next start only recognizes a new adapter once the old one is no longer active."""
         deadline = time.monotonic() + 12
         while time.monotonic() < deadline:
             try:
@@ -873,18 +873,18 @@ class Hotspot:
 
 def ssid_problem(ssid: str) -> str | None:
     if not 1 <= len(ssid.encode("utf-8")) <= 32 or not ssid.isprintable():
-        return "Název sítě musí mít 1 až 32 bajtů."
+        return "The network name must be 1 to 32 bytes long."
     return None
 
 
 def password_problem(password: str) -> str | None:
     if not (8 <= len(password) <= 63 and password.isascii() and password.isprintable()):
-        return "Heslo musí mít 8 až 63 znaků bez diakritiky."
+        return "The password must be 8 to 63 ASCII characters long."
     return None
 
 
 def execute(hotspot: Hotspot, line: str) -> bool:
-    """Provede příkaz z konzole. Vrací False, když se má aplikace ukončit."""
+    """Run a console command. Returns False when the application should exit."""
     parts = line.strip().split(maxsplit=1)
     if not parts:
         return True
@@ -897,40 +897,40 @@ def execute(hotspot: Hotspot, line: str) -> bool:
     elif command == "ssid":
         problem = ssid_problem(value)
         if problem:
-            say(f"{problem} Použití: ssid NÁZEV")
+            say(f"{problem} Usage: ssid NAME")
         elif value == hotspot.ssid:
-            say("Síť už se takto jmenuje.")
+            say("The network already has this name.")
         else:
             hotspot.ssid = value
-            hotspot.apply(f"Název sítě je teď {value}.")
-    elif command == "heslo":
+            hotspot.apply(f"The network name is now {value}.")
+    elif command == "password":
         problem = password_problem(value)
         if problem:
-            say(f"{problem} Použití: heslo NOVÉ_HESLO")
+            say(f"{problem} Usage: password NEW_PASSWORD")
         elif value == hotspot.password:
-            say("Tohle heslo už je nastavené.")
+            say("This password is already set.")
         else:
             hotspot.password = value
-            hotspot.apply("Heslo je změněné.")
+            hotspot.apply("The password has been changed.")
     elif command == "internet":
         choice = value.lower()
-        if choice not in ("zap", "vyp"):
-            say(f"Sdílení internetu: {hotspot.internet_state()}. Použití: internet zap|vyp")
-        elif (choice == "zap") == hotspot.internet:
-            say(f"Sdílení internetu už je {'zapnuté' if hotspot.internet else 'vypnuté'}.")
+        if choice not in ("on", "off"):
+            say(f"Internet sharing: {hotspot.internet_state()}. Usage: internet on|off")
+        elif (choice == "on") == hotspot.internet:
+            say(f"Internet sharing is already {'on' if hotspot.internet else 'off'}.")
         else:
-            hotspot.internet = choice == "zap"
+            hotspot.internet = choice == "on"
             if hotspot.internet and hotspot.password == DEFAULT_PASSWORD:
-                say("Pozor, síť má výchozí heslo a internet by mohl používat kdokoli v dosahu.")
-            hotspot.apply(f"Sdílení internetu je {'zapnuté' if hotspot.internet else 'vypnuté'}.")
+                say("Warning: the network uses the default password, anyone in range could use your internet.")
+            hotspot.apply(f"Internet sharing is {'on' if hotspot.internet else 'off'}.")
     elif command == "stop":
-        hotspot.pause() if hotspot.enabled else say("Hotspot už je pozastavený.")
+        hotspot.pause() if hotspot.enabled else say("The hotspot is already paused.")
     elif command == "start":
-        say("Hotspot už běží.") if hotspot.enabled else hotspot.resume()
+        say("The hotspot is already running.") if hotspot.enabled else hotspot.resume()
     elif command == "exit":
         return False
     else:
-        say(f"Neznámý příkaz {parts[0]}. Seznam příkazů vypíše help.")
+        say(f"Unknown command {parts[0]}. Type help for a list of commands.")
     return True
 
 
@@ -948,7 +948,7 @@ def command_loop(hotspot: Hotspot) -> None:
     while True:
         try:
             line = read_command()
-        except EOFError:  # Bez vstupu z konzole běží hotspot dál až do Ctrl+C.
+        except EOFError:  # Without console input the hotspot keeps running until Ctrl+C.
             while True:
                 time.sleep(1)
         if not execute(hotspot, line):
@@ -958,33 +958,33 @@ def command_loop(hotspot: Hotspot) -> None:
 def shut_down(hotspot: Hotspot, timeout: float = 20) -> None:
     global _at_prompt
     _at_prompt = False
-    log("Vypínám hotspot...")
+    log("Stopping hotspot...")
     hotspot.close(timeout)
-    log("Hotspot je vypnutý.")
+    log("The hotspot is off.")
 
 
 _console_callback = None
 
 
 def handle_console_events(hotspot: Hotspot) -> None:
-    """Ctrl+C i zavření okna hotspot korektně vypnou a ukončí aplikaci."""
+    """Ctrl+C and closing the window shut the hotspot down cleanly and exit."""
     global _console_callback
 
     def handler(event: int) -> bool:
         say()
-        shut_down(hotspot, 20 if event in (0, 1) else 4)  # Při zavření okna dá Windows jen pár sekund.
+        shut_down(hotspot, 20 if event in (0, 1) else 4)  # Windows allows only a few seconds when the window closes.
         os._exit(0)
 
     _console_callback = ctypes.WINFUNCTYPE(wintypes.BOOL, wintypes.DWORD)(handler)
-    ctypes.windll.kernel32.SetConsoleCtrlHandler(None, False)  # Ctrl+C mohl vypnout rodičovský proces.
+    ctypes.windll.kernel32.SetConsoleCtrlHandler(None, False)  # The parent process may have disabled Ctrl+C.
     ctypes.windll.kernel32.SetConsoleCtrlHandler(_console_callback, True)
 
 
 def parse_arguments() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(prog="pocketap", description="Wi-Fi hotspot, který běží i bez internetu.")
-    parser.add_argument("ssid", nargs="?", default=DEFAULT_SSID, help=f"název sítě (výchozí {DEFAULT_SSID})")
-    parser.add_argument("-p", "--password", default=DEFAULT_PASSWORD, help=f"heslo (výchozí {DEFAULT_PASSWORD})")
-    parser.add_argument("--internet", action="store_true", help=argparse.SUPPRESS)  # Přežije restart přes UAC.
+    parser = argparse.ArgumentParser(prog="pocketap", description="Wi-Fi hotspot that runs even without internet.")
+    parser.add_argument("ssid", nargs="?", default=DEFAULT_SSID, help=f"network name (default {DEFAULT_SSID})")
+    parser.add_argument("-p", "--password", default=DEFAULT_PASSWORD, help=f"password (default {DEFAULT_PASSWORD})")
+    parser.add_argument("--internet", action="store_true", help=argparse.SUPPRESS)  # Survives the UAC relaunch.
     args = parser.parse_args()
     problem = ssid_problem(args.ssid) or password_problem(args.password)
     if problem:
@@ -997,8 +997,8 @@ def main() -> int:
     args = parse_arguments()
     hotspot = Hotspot(args.ssid, args.password, args.internet)
     handle_console_events(hotspot)
-    say("PocketAP - seznam příkazů vypíše help\n")
-    log("Spouštím hotspot...")
+    say("PocketAP - type help for a list of commands\n")
+    log("Starting hotspot...")
     hotspot.thread.start()
     command_loop(hotspot)
     shut_down(hotspot)
